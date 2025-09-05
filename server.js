@@ -24,17 +24,25 @@ app.get('/', (req, res) => {
 // Function to call Python authentication handler
 function callPythonAuth(endpoint, data) {
     return new Promise((resolve, reject) => {
+        // Create a temporary Python script file
+        const fs = require('fs');
+        const tempScriptPath = path.join(__dirname, 'temp_auth_script.py');
+        
         const pythonScript = `
 import sys
 import json
 import os
-sys.path.append('${__dirname.replace(/\\/g, '\\\\')}')
+
+# Add current directory to Python path
+current_dir = r'${__dirname}'
+sys.path.insert(0, current_dir)
 
 try:
     from auth_handler import auth_handler
     
     endpoint = '${endpoint}'
-    data = json.loads('${JSON.stringify(data).replace(/'/g, "\\'")}')
+    data_str = '''${JSON.stringify(data)}'''
+    data = json.loads(data_str)
     
     result = auth_handler.handle_request(endpoint, data)
     print("RESULT_START")
@@ -42,12 +50,20 @@ try:
     print("RESULT_END")
     
 except Exception as e:
+    import traceback
     print("RESULT_START")
-    print(json.dumps({"success": false, "message": str(e)}))
+    print(json.dumps({"success": False, "message": f"Python Error: {str(e)}"}))
     print("RESULT_END")
+    print(f"Error details: {traceback.format_exc()}", file=sys.stderr)
 `;
 
-        const python = spawn('python', ['-c', pythonScript]);
+        // Write the script to a temporary file
+        fs.writeFileSync(tempScriptPath, pythonScript);
+
+        const python = spawn('python', [tempScriptPath], {
+            cwd: __dirname,
+            env: { ...process.env, PYTHONPATH: __dirname }
+        });
         
         let result = '';
         let error = '';
@@ -75,10 +91,21 @@ except Exception as e:
         });
 
         python.stderr.on('data', (data) => {
-            error += data.toString();
+            const errorOutput = data.toString();
+            error += errorOutput;
+            if (errorOutput.trim()) {
+                console.error('🐍 Python Error:', errorOutput.trim());
+            }
         });
 
         python.on('close', (code) => {
+            // Clean up temporary file
+            try {
+                fs.unlinkSync(tempScriptPath);
+            } catch (e) {
+                // Ignore cleanup errors
+            }
+
             if (code === 0) {
                 try {
                     const parsedResult = JSON.parse(result.trim());
@@ -86,12 +113,24 @@ except Exception as e:
                 } catch (e) {
                     console.error('❌ Error parsing Python output:', e);
                     console.error('Raw output:', result);
-                    resolve({ success: false, message: 'Error parsing response' });
+                    resolve({ success: false, message: 'Error parsing Python response' });
                 }
             } else {
-                console.error('❌ Python script error:', error);
+                console.error('❌ Python script failed with code:', code);
+                console.error('❌ Python error output:', error);
                 reject(new Error(`Python script failed with code ${code}: ${error}`));
             }
+        });
+
+        python.on('error', (err) => {
+            console.error('❌ Failed to start Python process:', err);
+            // Clean up temporary file
+            try {
+                fs.unlinkSync(tempScriptPath);
+            } catch (e) {
+                // Ignore cleanup errors
+            }
+            reject(new Error(`Failed to start Python process: ${err.message}`));
         });
     });
 }
@@ -273,7 +312,8 @@ app.listen(PORT, () => {
     console.log('   Anudhriti Mahanta - +91 93873 45518 - Aadhaar: 678901234567');
     console.log('='.repeat(70));
     console.log('📱 OTP will be displayed in this terminal');
-    console.log('🔗 Connected to: https://dadusecurity-1.onrender.com');
+    console.log('🔗 Primary Server: https://dadusecurity-1.onrender.com');
+    console.log('🌐 Frontend configured to use deployed server only');
     console.log('='.repeat(70) + '\n');
 });
 
