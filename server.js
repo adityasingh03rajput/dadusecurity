@@ -1,329 +1,94 @@
-/**
- * DaduSecurity Server
- * Node.js server connecting HTML frontend with Python backend
- */
-
-const express = require('express');
-const path = require('path');
-const { spawn } = require('child_process');
-const cors = require('cors');
+// server.js
+const express = require("express");
+const bodyParser = require("body-parser");
+const crypto = require("crypto");
+const cors = require("cors");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middleware
+app.use(bodyParser.json());
 app.use(cors());
-app.use(express.json());
-app.use(express.static(__dirname));
 
-// Serve the main HTML file
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// Function to call Python authentication handler
-function callPythonAuth(endpoint, data) {
-    return new Promise((resolve, reject) => {
-        // Create a temporary Python script file
-        const fs = require('fs');
-        const tempScriptPath = path.join(__dirname, 'temp_auth_script.py');
-        
-        const pythonScript = `
-import sys
-import json
-import os
-
-# Add current directory to Python path
-current_dir = r'${__dirname}'
-sys.path.insert(0, current_dir)
-
-try:
-    from auth_handler import auth_handler
-    
-    endpoint = '${endpoint}'
-    data_str = '''${JSON.stringify(data)}'''
-    data = json.loads(data_str)
-    
-    result = auth_handler.handle_request(endpoint, data)
-    print("RESULT_START")
-    print(json.dumps(result))
-    print("RESULT_END")
-    
-except Exception as e:
-    import traceback
-    print("RESULT_START")
-    print(json.dumps({"success": False, "message": f"Python Error: {str(e)}"}))
-    print("RESULT_END")
-    print(f"Error details: {traceback.format_exc()}", file=sys.stderr)
-`;
-
-        // Write the script to a temporary file
-        fs.writeFileSync(tempScriptPath, pythonScript);
-
-        const python = spawn('python', [tempScriptPath], {
-            cwd: __dirname,
-            env: { ...process.env, PYTHONPATH: __dirname }
-        });
-        
-        let result = '';
-        let error = '';
-        let capturing = false;
-        
-        python.stdout.on('data', (data) => {
-            const output = data.toString();
-            const lines = output.split('\n');
-            
-            for (const line of lines) {
-                if (line.trim() === 'RESULT_START') {
-                    capturing = true;
-                    result = '';
-                } else if (line.trim() === 'RESULT_END') {
-                    capturing = false;
-                } else if (capturing) {
-                    result += line + '\n';
-                } else {
-                    // This is console output from Python (OTP messages, etc.)
-                    if (line.trim()) {
-                        console.log('🐍 Python:', line);
-                    }
-                }
-            }
-        });
-
-        python.stderr.on('data', (data) => {
-            const errorOutput = data.toString();
-            error += errorOutput;
-            if (errorOutput.trim()) {
-                console.error('🐍 Python Error:', errorOutput.trim());
-            }
-        });
-
-        python.on('close', (code) => {
-            // Clean up temporary file
-            try {
-                fs.unlinkSync(tempScriptPath);
-            } catch (e) {
-                // Ignore cleanup errors
-            }
-
-            if (code === 0) {
-                try {
-                    const parsedResult = JSON.parse(result.trim());
-                    resolve(parsedResult);
-                } catch (e) {
-                    console.error('❌ Error parsing Python output:', e);
-                    console.error('Raw output:', result);
-                    resolve({ success: false, message: 'Error parsing Python response' });
-                }
-            } else {
-                console.error('❌ Python script failed with code:', code);
-                console.error('❌ Python error output:', error);
-                reject(new Error(`Python script failed with code ${code}: ${error}`));
-            }
-        });
-
-        python.on('error', (err) => {
-            console.error('❌ Failed to start Python process:', err);
-            // Clean up temporary file
-            try {
-                fs.unlinkSync(tempScriptPath);
-            } catch (e) {
-                // Ignore cleanup errors
-            }
-            reject(new Error(`Failed to start Python process: ${err.message}`));
-        });
-    });
-}
-
-// API Routes
-
-// Health check
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        success: true, 
-        message: 'DaduSecurity server is running',
-        timestamp: new Date().toISOString(),
-        server: 'Node.js + Python Backend'
-    });
-});
-
-// Verify identity (Aadhaar or Passport)
-app.post('/api/verify-identity', async (req, res) => {
-    try {
-        console.log('🔍 Identity verification request:', req.body);
-        const result = await callPythonAuth('/api/verify-identity', req.body);
-        console.log('✅ Identity verification result:', result.success ? 'Success' : 'Failed');
-        res.json(result);
-    } catch (error) {
-        console.error('❌ Identity verification error:', error.message);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server error during identity verification' 
-        });
+// Fake DB
+let users = [
+    {
+        name: "Pranav",
+        phone: "919755967700",
+        adhaar: "123456789012",
+        passport: "P1234567",
+        email: "pranav@example.com",
+        address: "Delhi, India"
+    },
+    {
+        name: "Aditya",
+        phone: "919876543210",
+        adhaar: "987654321098",
+        passport: "P7654321",
+        email: "aditya@example.com",
+        address: "Mumbai, India"
     }
-});
+];
 
-// Verify OTP
-app.post('/api/verify-otp', async (req, res) => {
-    try {
-        console.log('🔍 OTP verification request for:', req.body.identifier);
-        const result = await callPythonAuth('/api/verify-otp', req.body);
-        console.log('✅ OTP verification result:', result.success ? 'Success' : 'Failed');
-        res.json(result);
-    } catch (error) {
-        console.error('❌ OTP verification error:', error.message);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server error during OTP verification' 
-        });
+let otpStore = {}; // { phone: otp }
+let activeSessions = []; // [{ phone, user, status }]
+
+// Generate OTP
+app.post("/generate-otp", (req, res) => {
+    const { adhaar, passport } = req.body;
+    let user = null;
+
+    if (adhaar) user = users.find(u => u.adhaar === adhaar);
+    else if (passport) user = users.find(u => u.passport === passport);
+
+    if (!user) {
+        return res.status(404).json({ error: "User not found" });
     }
+
+    const otp = crypto.randomInt(100000, 999999).toString();
+    otpStore[user.phone] = otp;
+
+    res.json({ phone: user.phone, otp, name: user.name });
 });
 
-// Resend OTP
-app.post('/api/resend-otp', async (req, res) => {
-    try {
-        console.log('🔍 OTP resend request for:', req.body.identifier);
-        const result = await callPythonAuth('/api/resend-otp', req.body);
-        console.log('✅ OTP resend result:', result.success ? 'Success' : 'Failed');
-        res.json(result);
-    } catch (error) {
-        console.error('❌ OTP resend error:', error.message);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Server error during OTP resend' 
-        });
+// Validate OTP
+app.post("/validate-otp", (req, res) => {
+    const { phone, otp } = req.body;
+
+    if (otpStore[phone] && otpStore[phone] === otp) {
+        const user = users.find(u => u.phone === phone);
+        delete otpStore[phone];
+
+        // Add to active sessions if not already
+        if (!activeSessions.some(s => s.phone === phone)) {
+            activeSessions.push({ phone, user, status: "Normal" });
+        }
+
+        return res.json({ success: true, message: "Welcome sir", user });
     }
+
+    res.json({ success: false, message: "Invalid OTP" });
 });
 
-// Test Python backend connection
-app.get('/api/test-backend', async (req, res) => {
-    try {
-        const testData = {
-            auth_method: 'aadhaar',
-            aadhaar: '123456789012'
-        };
-        
-        const result = await callPythonAuth('/api/verify-identity', testData);
-        res.json({
-            success: true,
-            message: 'Python backend connection successful',
-            test_result: result
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            message: 'Python backend connection failed',
-            error: error.message
-        });
+// Dashboard list
+app.get("/dashboard", (req, res) => {
+    res.json({ success: true, users: activeSessions });
+});
+
+// SOS Trigger
+app.post("/sos", (req, res) => {
+    const { phone } = req.body;
+
+    let index = activeSessions.findIndex(s => s.phone === phone);
+    if (index !== -1) {
+        activeSessions[index].status = "SOS";
+
+        // Move to top of list
+        const sosUser = activeSessions.splice(index, 1)[0];
+        activeSessions.unshift(sosUser);
+
+        return res.json({ success: true, message: "SOS Activated", users: activeSessions });
     }
+
+    res.json({ success: false, message: "User not logged in" });
 });
 
-// Get database users (for testing)
-app.get('/api/users', async (req, res) => {
-    try {
-        const python = spawn('python', ['-c', `
-import sys
-sys.path.append('${__dirname.replace(/\\/g, '\\\\')}')
-from database import DaduSecurityDB
-import json
-
-db = DaduSecurityDB()
-users = db.get_all_users()
-result = []
-for user in users:
-    result.append({
-        'name': user[0],
-        'mobile': user[1],
-        'aadhaar': user[2],
-        'passport': user[3]
-    })
-
-print(json.dumps(result))
-        `]);
-
-        let result = '';
-        python.stdout.on('data', (data) => {
-            result += data.toString();
-        });
-
-        python.on('close', (code) => {
-            if (code === 0) {
-                try {
-                    const users = JSON.parse(result.trim());
-                    res.json({
-                        success: true,
-                        users: users
-                    });
-                } catch (e) {
-                    res.status(500).json({
-                        success: false,
-                        message: 'Error parsing users data'
-                    });
-                }
-            } else {
-                res.status(500).json({
-                    success: false,
-                    message: 'Error fetching users'
-                });
-            }
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            message: 'Server error fetching users'
-        });
-    }
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-    console.error('❌ Server error:', err);
-    res.status(500).json({
-        success: false,
-        message: 'Internal server error'
-    });
-});
-
-// 404 handler
-app.use((req, res) => {
-    res.status(404).json({
-        success: false,
-        message: 'Endpoint not found'
-    });
-});
-
-// Start server
-app.listen(PORT, () => {
-    console.log('\n' + '='.repeat(70));
-    console.log('🚀 DaduSecurity Server Started');
-    console.log('='.repeat(70));
-    console.log(`📡 Server running on: http://localhost:${PORT}`);
-    console.log(`🌐 Access the portal: http://localhost:${PORT}`);
-    console.log(`🔧 Health check: http://localhost:${PORT}/api/health`);
-    console.log(`👥 View users: http://localhost:${PORT}/api/users`);
-    console.log(`🧪 Test backend: http://localhost:${PORT}/api/test-backend`);
-    console.log('='.repeat(70));
-    console.log('📋 Registered Users:');
-    console.log('   Archie - +91 93996 41235 - Aadhaar: 123456789012');
-    console.log('   Pranav Namdeo - +91 97559 67700 - Aadhaar: 234567890123');
-    console.log('   Aksh - +91 93997 65924 - Aadhaar: 345678901234');
-    console.log('   Ayushi Vishwakarma - +91 93438 60485 - Aadhaar: 456789012345');
-    console.log('   Ananya Samaiya - +91 73895 33745 - Aadhaar: 567890123456');
-    console.log('   Anudhriti Mahanta - +91 93873 45518 - Aadhaar: 678901234567');
-    console.log('='.repeat(70));
-    console.log('📱 OTP will be displayed in this terminal');
-    console.log('🔗 Primary Server: https://dadusecurity-1.onrender.com');
-    console.log('🌐 Frontend configured to use deployed server only');
-    console.log('='.repeat(70) + '\n');
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log('\n🛑 Shutting down DaduSecurity server...');
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    console.log('\n🛑 Shutting down DaduSecurity server...');
-    process.exit(0);
-});
+app.listen(5000, () => console.log("✅ Server running on port 5000"));
