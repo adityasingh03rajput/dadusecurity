@@ -28,7 +28,7 @@ let users = [
 ];
 
 let otpStore = {}; // { phone: otp }
-let activeSessions = []; // [{ phone, user, status }]
+let activeSessions = []; // [{ phone, user, status, loginTime }]
 let efirRecords = []; // [{ ref_id, phone, complaint, location, timestamp }]
 
 // Generate OTP
@@ -59,10 +59,15 @@ app.post("/validate-otp", (req, res) => {
 
         // Add to active sessions if not already
         if (!activeSessions.some(s => s.phone === phone)) {
-            activeSessions.push({ phone, user, status: "Normal" });
+            activeSessions.push({ 
+                phone, 
+                user, 
+                status: "Normal", 
+                loginTime: new Date().toISOString() 
+            });
         }
 
-        return res.json({ success: true, message: "Welcome sir", user });
+        return res.json({ success: true, message: "Login successful", user });
     }
 
     res.json({ success: false, message: "Invalid OTP" });
@@ -80,6 +85,7 @@ app.post("/sos", (req, res) => {
     let index = activeSessions.findIndex(s => s.phone === phone);
     if (index !== -1) {
         activeSessions[index].status = "SOS";
+        activeSessions[index].sosTime = new Date().toISOString();
 
         // Move to top of list
         const sosUser = activeSessions.splice(index, 1)[0];
@@ -125,6 +131,32 @@ app.get("/efir/:phone", (req, res) => {
     const userEfirs = efirRecords.filter(record => record.phone === phone);
     
     res.json({ success: true, records: userEfirs });
+});
+
+// Get all login logs
+app.get("/logs", (req, res) => {
+    const logs = activeSessions.map(session => ({
+        name: session.user.name,
+        phone: session.phone,
+        status: session.status,
+        loginTime: session.loginTime,
+        sosTime: session.sosTime || "N/A"
+    }));
+    
+    res.json({ success: true, logs });
+});
+
+// Remove user from active sessions (logout)
+app.post("/logout", (req, res) => {
+    const { phone } = req.body;
+    const index = activeSessions.findIndex(s => s.phone === phone);
+    
+    if (index !== -1) {
+        activeSessions.splice(index, 1);
+        res.json({ success: true, message: "Logged out successfully" });
+    } else {
+        res.json({ success: false, message: "User not found in active sessions" });
+    }
 });
 
 app.listen(5000, () => console.log("✅ Server running on port 5000"));
