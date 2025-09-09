@@ -1,4 +1,3 @@
-// server.js
 const express = require("express");
 const bodyParser = require("body-parser");
 const crypto = require("crypto");
@@ -30,6 +29,7 @@ let users = [
 
 let otpStore = {}; // { phone: otp }
 let activeSessions = []; // [{ phone, user, status }]
+let efirRecords = []; // [{ ref_id, phone, complaint, location, timestamp }]
 
 // Generate OTP
 app.post("/generate-otp", (req, res) => {
@@ -89,6 +89,42 @@ app.post("/sos", (req, res) => {
     }
 
     res.json({ success: false, message: "User not logged in" });
+});
+
+// e-FIR Filing
+app.post("/efir", (req, res) => {
+    const { phone, complaint, location } = req.body;
+    
+    const user = users.find(u => u.phone === phone);
+    if (!user) {
+        return res.json({ success: false, message: "User not found" });
+    }
+    
+    const ref_id = crypto.randomBytes(8).toString('hex');
+    const timestamp = new Date().toISOString();
+    
+    efirRecords.push({
+        ref_id,
+        phone,
+        name: user.name,
+        complaint,
+        location,
+        timestamp
+    });
+    
+    res.json({ 
+        success: true, 
+        message: "e-FIR filed successfully",
+        ref_id 
+    });
+});
+
+// Get e-FIR records
+app.get("/efir/:phone", (req, res) => {
+    const { phone } = req.params;
+    const userEfirs = efirRecords.filter(record => record.phone === phone);
+    
+    res.json({ success: true, records: userEfirs });
 });
 
 app.listen(5000, () => console.log("✅ Server running on port 5000"));
