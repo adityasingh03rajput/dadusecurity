@@ -11,7 +11,7 @@ app.use(cors());
 let users = [
     {
         name: "Pranav",
-        phone: "919755967700",
+        phone: "917559677000", // WhatsApp number (dummy)
         adhaar: "123456789012",
         passport: "P1234567",
         email: "pranav@example.com",
@@ -19,7 +19,7 @@ let users = [
     },
     {
         name: "Aditya",
-        phone: "919876543210",
+        phone: "918765432100", // WhatsApp number (dummy)
         adhaar: "987654321098",
         passport: "P7654321",
         email: "aditya@example.com",
@@ -27,9 +27,10 @@ let users = [
     }
 ];
 
-let otpStore = {}; // { phone: otp }
+let otpStore = {}; // { phone: {otp, adhaar, passport} }
 let activeSessions = []; // [{ phone, user, status, loginTime }]
 let efirRecords = []; // [{ ref_id, phone, complaint, location, timestamp }]
+let ratings = []; // [{ phone, rating, feedback, timestamp }]
 
 // Generate OTP
 app.post("/generate-otp", (req, res) => {
@@ -44,17 +45,27 @@ app.post("/generate-otp", (req, res) => {
     }
 
     const otp = crypto.randomInt(100000, 999999).toString();
-    otpStore[user.phone] = otp;
+    otpStore[user.phone] = {
+        otp,
+        adhaar: user.adhaar,
+        passport: user.passport
+    };
 
-    res.json({ phone: user.phone, otp, name: user.name });
+    res.json({ 
+        phone: user.phone, 
+        otp, 
+        name: user.name,
+        message: "OTP generated successfully. Police will send it via WhatsApp."
+    });
 });
 
 // Validate OTP
 app.post("/validate-otp", (req, res) => {
     const { phone, otp } = req.body;
 
-    if (otpStore[phone] && otpStore[phone] === otp) {
+    if (otpStore[phone] && otpStore[phone].otp === otp) {
         const user = users.find(u => u.phone === phone);
+        const { adhaar, passport } = otpStore[phone];
         delete otpStore[phone];
 
         // Add to active sessions if not already
@@ -67,7 +78,13 @@ app.post("/validate-otp", (req, res) => {
             });
         }
 
-        return res.json({ success: true, message: "Login successful", user });
+        return res.json({ 
+            success: true, 
+            message: "Login successful", 
+            user,
+            adhaar,
+            passport
+        });
     }
 
     res.json({ success: false, message: "Invalid OTP" });
@@ -76,6 +93,25 @@ app.post("/validate-otp", (req, res) => {
 // Dashboard list
 app.get("/dashboard", (req, res) => {
     res.json({ success: true, users: activeSessions });
+});
+
+// Get pending OTP requests
+app.get("/pending-otp", (req, res) => {
+    const pending = [];
+    for (const [phone, data] of Object.entries(otpStore)) {
+        const user = users.find(u => u.phone === phone);
+        if (user) {
+            pending.push({
+                phone,
+                otp: data.otp,
+                name: user.name,
+                adhaar: data.adhaar,
+                passport: data.passport,
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+    res.json({ success: true, pending });
 });
 
 // SOS Trigger
@@ -122,6 +158,31 @@ app.post("/efir", (req, res) => {
         success: true, 
         message: "e-FIR filed successfully",
         ref_id 
+    });
+});
+
+// Submit Rating
+app.post("/rating", (req, res) => {
+    const { phone, rating, feedback } = req.body;
+    
+    const user = users.find(u => u.phone === phone);
+    if (!user) {
+        return res.json({ success: false, message: "User not found" });
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    ratings.push({
+        phone,
+        name: user.name,
+        rating,
+        feedback,
+        timestamp
+    });
+    
+    res.json({ 
+        success: true, 
+        message: "Rating submitted successfully"
     });
 });
 
