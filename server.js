@@ -27,7 +27,7 @@ let users = [
     }
 ];
 
-let otpStore = {}; // { phone: {otp, adhaar, passport} }
+let otpStore = {}; // { phone: {otp, adhaar, passport, timestamp} }
 let activeSessions = []; // [{ phone, user, status, loginTime }]
 let efirRecords = []; // [{ ref_id, phone, complaint, location, timestamp }]
 let ratings = []; // [{ phone, rating, feedback, timestamp }]
@@ -48,20 +48,27 @@ app.post("/generate-otp", (req, res) => {
     otpStore[user.phone] = {
         otp,
         adhaar: user.adhaar,
-        passport: user.passport
+        passport: user.passport,
+        timestamp: new Date().toISOString()
     };
 
     res.json({ 
         phone: user.phone, 
         otp, 
         name: user.name,
-        message: "OTP generated successfully. Police will send it via WhatsApp."
+        message: "OTP generated successfully. It will be sent via WhatsApp shortly."
     });
 });
 
 // Validate OTP
 app.post("/validate-otp", (req, res) => {
     const { phone, otp } = req.body;
+
+    // Check if OTP is expired (5 minutes)
+    if (otpStore[phone] && (new Date() - new Date(otpStore[phone].timestamp)) > 5 * 60 * 1000) {
+        delete otpStore[phone];
+        return res.json({ success: false, message: "OTP expired" });
+    }
 
     if (otpStore[phone] && otpStore[phone].otp === otp) {
         const user = users.find(u => u.phone === phone);
@@ -107,11 +114,23 @@ app.get("/pending-otp", (req, res) => {
                 name: user.name,
                 adhaar: data.adhaar,
                 passport: data.passport,
-                timestamp: new Date().toISOString()
+                timestamp: data.timestamp
             });
         }
     }
     res.json({ success: true, pending });
+});
+
+// Mark OTP as sent
+app.post("/mark-otp-sent", (req, res) => {
+    const { phone } = req.body;
+    
+    if (otpStore[phone]) {
+        otpStore[phone].sent = true;
+        res.json({ success: true, message: "OTP marked as sent" });
+    } else {
+        res.json({ success: false, message: "OTP not found" });
+    }
 });
 
 // SOS Trigger
