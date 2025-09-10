@@ -1,48 +1,23 @@
 {
-  "name": "dadusecurity-portal",
-  "version": "2.0.0",
-  "description": "DaduSecurity Government Authentication Portal with Python Backend and Real Database",
+  "name": "sos-emergency-system",
+  "version": "1.0.0",
+  "description": "Real-time SOS emergency alert system with robust connections",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "init": "python start_system.py",
-    "test": "python start_system.py && node server.js",
-    "setup": "npm install && python start_system.py"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [
-    "government",
-    "authentication",
-    "aadhaar",
-    "passport",
-    "otp",
-    "whatsapp",
-    "security",
-    "india",
-    "python",
-    "sqlite",
-    "database"
-  ],
-  "author": "DaduSecurity Team",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "socket.io": "^4.7.2",
+    "cors": "^2.8.5",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
-  "engines": {
-    "node": ">=14.0.0",
-    "npm": ">=6.0.0",
-    "python": ">=3.7.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/dadusecurity/portal"
-  },
-  "bugs": {
-    "url": "https://github.com/dadusecurity/portal/issues"
-  },
-  "homepage": "https://github.com/dadusecurity/portal#readme"
+  "keywords": ["sos", "emergency", "real-time", "aadhaar", "websocket"],
+  "author": "Emergency System Team",
+  "license": "MIT"
 }
