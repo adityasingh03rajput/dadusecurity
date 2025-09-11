@@ -1,92 +1,112 @@
-import socket
-import threading
-import json
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel
+from typing import List, Dict
+import uuid
 from datetime import datetime
+import requests
 
-class ConnectionServer:
-    def __init__(self, host='localhost', port=9999, police_port=8888):
-        self.host = host
-        self.port = port
-        self.police_port = police_port
-        self.clients = []
-        self.lock = threading.Lock()
+app = FastAPI(title="User Connection Tracking Server")
+
+# In-memory storage (in production, use a database)
+active_connections: Dict[str, dict] = {}
+connection_history: List[dict] = []
+
+class UserConnection(BaseModel):
+    user_id: str
+    user_name: str
+    action: str  # "connect" or "disconnect"
+
+# Webhook URL for police notifications (would be set in your environment)
+POLICE_WEBHOOK_URL = "https://dadusecurity-2.onrender.com/notify"
+
+def notify_police(user_data: dict):
+    """Send notification to police monitor about user connection"""
+    try:
+        # In a real implementation, this would send to your webhook URL
+        # For now, we'll just print and store the notification
+        print(f"POLICE NOTIFICATION: {user_data['user_name']} {user_data['action']}ed")
         
-    def notify_police(self, user_name, action):
-        """Send notification to police monitor about user connection"""
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((self.host, self.police_port))
-                message = {
-                    'user': user_name,
-                    'action': action,
-                    'timestamp': datetime.now().isoformat()
-                }
-                s.send(json.dumps(message).encode())
-        except Exception as e:
-            print(f"Could not notify police: {e}")
-    
-    def handle_client(self, client_socket, address):
-        """Handle incoming client connections"""
-        try:
-            # Receive user name
-            user_name = client_socket.recv(1024).decode()
-            if not user_name:
-                return
-                
-            print(f"User {user_name} connected from {address}")
-            
-            # Notify police about the connection
-            self.notify_police(user_name, 'connect')
-            
-            # Add to clients list
-            with self.lock:
-                self.clients.append((user_name, client_socket))
-                
-            # Keep connection alive until client disconnects
-            while True:
-                try:
-                    # Check if client is still connected
-                    client_socket.send(b'ping')
-                    threading.Event().wait(5)  # Wait 5 seconds
-                except:
-                    break
-                    
-        except Exception as e:
-            print(f"Error handling client: {e}")
-        finally:
-            # Clean up on disconnect
-            with self.lock:
-                for i, (name, sock) in enumerate(self.clients):
-                    if sock == client_socket:
-                        self.clients.pop(i)
-                        print(f"User {name} disconnected")
-                        self.notify_police(name, 'disconnect')
-                        break
-            client_socket.close()
-    
-    def start(self):
-        """Start the server"""
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind((self.host, self.port))
-        server_socket.listen(5)
+        # This is where you would send the actual HTTP request:
+        # response = requests.post(
+        #     POLICE_WEBHOOK_URL,
+        #     json=user_data,
+        #     headers={"Content-Type": "application/json"}
+        # )
+    except Exception as e:
+        print(f"Failed to notify police: {e}")
+
+@app.post("/connect")
+async def user_connect(user_data: UserConnection, background_tasks: BackgroundTasks):
+    """Endpoint for users to connect"""
+    try:
+        connection_id = str(uuid.uuid4())
+        timestamp = datetime.now().isoformat()
         
-        print(f"Server listening on {self.host}:{self.port}")
+        connection_record = {
+            "connection_id": connection_id,
+            "user_id": user_data.user_id,
+            "user_name": user_data.user_name,
+            "action": "connect",
+            "timestamp": timestamp
+        }
         
-        try:
-            while True:
-                client_socket, address = server_socket.accept()
-                client_thread = threading.Thread(
-                    target=self.handle_client, 
-                    args=(client_socket, address)
-                )
-                client_thread.daemon = True
-                client_thread.start()
-        except KeyboardInterrupt:
-            print("Server shutting down")
-        finally:
-            server_socket.close()
+        # Store the connection
+        active_connections[user_data.user_id] = connection_record
+        connection_history.append(connection_record)
+        
+        # Notify police in the background
+        background_tasks.add_task(notify_police, connection_record)
+        
+        return {"status": "success", "message": f"User {user_data.user_name} connected", "connection_id": connection_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/disconnect")
+async def user_disconnect(user_data: UserConnection, background_tasks: BackgroundTasks):
+    """Endpoint for users to disconnect"""
+    try:
+        if user_data.user_id not in active_connections:
+            raise HTTPException(status_code=404, detail="User not found in active connections")
+        
+        timestamp = datetime.now().isoformat()
+        
+        connection_record = {
+            "connection_id": active_connections[user_data.user_id]["connection_id"],
+            "user_id": user_data.user_id,
+            "user_name": user_data.user_name,
+            "action": "disconnect",
+            "timestamp": timestamp
+        }
+        
+        # Remove from active connections and add to history
+        del active_connections[user_data.user_id]
+        connection_history.append(connection_record)
+        
+        # Notify police in the background
+        background_tasks.add_task(notify_police, connection_record)
+        
+        return {"status": "success", "message": f"User {user_data.user_name} disconnected"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/active-connections")
+async def get_active_connections():
+    """Get all currently active connections"""
+    return {"active_connections": list(active_connections.values())}
+
+@app.get("/connection-history")
+async def get_connection_history(limit: int = 100):
+    """Get connection history"""
+    return {"connection_history": connection_history[-limit:]}
+
+@app.post("/notify")
+async def police_notification(user_data: UserConnection):
+    """Endpoint for police to receive notifications (webhook)"""
+    # In a real implementation, this would process notifications from your server
+    # For this demo, we'll just acknowledge receipt
+    print(f"Received police notification: {user_data.user_name} {user_data.action}")
+    return {"status": "notification received"}
 
 if __name__ == "__main__":
-    server = ConnectionServer()
-    server.start()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
